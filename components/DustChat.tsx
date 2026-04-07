@@ -41,6 +41,9 @@ export default function DustChat() {
     });
 
     const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.error ?? `Request failed (${response.status})`);
+    }
     return data.conversationId;
   };
 

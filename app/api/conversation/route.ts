@@ -29,5 +29,14 @@ export async function POST(request: NextRequest) {
   );
 
   const data = await response.json();
+
+  if (!response.ok) {
+    console.error('Dust API error:', response.status, data);
+    return NextResponse.json(
+      { error: data?.error?.message ?? `Dust API error ${response.status}` },
+      { status: response.status }
+    );
+  }
+
   return NextResponse.json({ conversationId: data.conversation.sId });
 }
