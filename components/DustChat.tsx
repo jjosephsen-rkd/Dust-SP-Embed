@@ -26,115 +26,131 @@ export default function DustChat() {
     return () => abortRef.current?.abort();
   }, []);
 
+  /**
+   * Creates a new conversation with the first user message.
+   * Returns both conversationId and the user messageId needed for event streaming.
+   */
   const createConversation = async (userMessage: string) => {
-    const response = await fetch('/api/conversation', {
+    const res = await fetch('/api/conversation', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: userMessage }),
     });
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data?.error ?? `Request failed (${response.status})`);
-    }
-    return data.conversationId;
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error ?? `Request failed (${res.status})`);
+    return { conversationId: data.conversationId, messageId: data.messageId };
   };
 
-  const sendMessage = async (convId: string, userMessage: string) => {
-    const response = await fetch('/api/message', {
+  /**
+   * Posts a follow-up message to an existing conversation.
+   * Returns the user messageId needed for event streaming.
+   */
+  const postMessage = async (convId: string, userMessage: string) => {
+    const res = await fetch('/api/message', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ conversationId: convId, message: userMessage }),
     });
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data?.error ?? `Request failed (${response.status})`);
-    }
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error ?? `Request failed (${res.status})`);
+    return data.messageId as string;
   };
 
-  const streamEvents = async (convId: string) => {
+  /**
+   * Streams agent response events for a given conversation + user message.
+   * Dust SSE format: each line is "data: {json}" where json.type identifies the event.
+   */
+  const streamEvents = async (convId: string, userMsgId: string) => {
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
 
-    const response = await fetch(`/api/events?conversationId=${convId}`, {
-      signal: controller.signal,
-    });
+    const res = await fetch(
+      `/api/events?conversationId=${convId}&messageId=${userMsgId}`,
+      { signal: controller.signal }
+    );
 
-    if (!response.ok || !response.body) {
-      throw new Error(`Events stream failed (${response.status})`);
+    if (!res.ok || !res.body) {
+      throw new Error(`Events stream failed (${res.status})`);
     }
 
-    const reader = response.body.getReader();
+    const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
-    let currentMessageId = '';
-    let currentContent = '';
-    let pendingEventType = '';
+    let agentMessageId = '';
+    let agentContent = '';
 
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
+
+      // Process complete lines
       const lines = buffer.split('\n');
       buffer = lines.pop() ?? '';
 
       for (const line of lines) {
-        if (line.startsWith('event:')) {
-          pendingEventType = line.slice(6).trim();
-        } else if (line.startsWith('data:') && pendingEventType) {
-          const rawData = line.slice(5).trim();
-          pendingEventType = '';
+        if (!line.startsWith('data:')) continue;
 
-          let data: Record<string, unknown>;
-          try {
-            data = JSON.parse(rawData);
-          } catch {
-            continue;
-          }
+        const raw = line.slice(5).trim();
+        if (!raw || raw === '[DONE]') continue;
 
-          const eventType = (data.type as string) ?? pendingEventType;
+        let event: Record<string, unknown>;
+        try {
+          event = JSON.parse(raw);
+        } catch {
+          continue;
+        }
 
-          if (eventType === 'agent_message_new' || data.messageId) {
-            currentMessageId = (data.messageId ?? `agent-${Date.now()}`) as string;
-            currentContent = '';
-            setMessages((prev) => [
-              ...prev,
-              { id: currentMessageId, type: 'agent', content: '', streaming: true },
-            ]);
-          } else if (eventType === 'generation_tokens' || data.text !== undefined) {
-            currentContent += (data.text as string) ?? '';
-            const id = currentMessageId;
-            const content = currentContent;
+        const type = event.type as string;
+
+        if (type === 'agent_message_new') {
+          // Agent is starting a response — create a placeholder message
+          const msg = event.message as Record<string, unknown>;
+          agentMessageId = (msg?.sId ?? `agent-${Date.now()}`) as string;
+          agentContent = '';
+          setMessages((prev) => [
+            ...prev,
+            { id: agentMessageId, type: 'agent', content: '', streaming: true },
+          ]);
+        } else if (type === 'generation_tokens') {
+          // Only show actual response tokens, not chain-of-thought
+          if (event.classification === 'tokens' && event.text) {
+            agentContent += event.text as string;
+            const id = agentMessageId;
+            const content = agentContent;
             setMessages((prev) =>
-              prev.map((msg) =>
-                msg.id === id ? { ...msg, content, streaming: true } : msg
-              )
+              prev.map((m) => (m.id === id ? { ...m, content, streaming: true } : m))
             );
-          } else if (eventType === 'agent_message_success') {
-            setMessages((prev) =>
-              prev.map((msg) =>
-                msg.id === currentMessageId ? { ...msg, streaming: false } : msg
-              )
-            );
-            setIsLoading(false);
-            return;
-          } else if (eventType === 'agent_error') {
-            const errMsg = (data.error as { message?: string })?.message ?? 'Agent error';
-            setError(errMsg);
-            setIsLoading(false);
-            return;
           }
-        } else if (line === '') {
-          pendingEventType = '';
+        } else if (type === 'agent_message_success') {
+          // Use the final content from the success event as source of truth
+          const msg = event.message as Record<string, unknown>;
+          const finalContent = (msg?.content as string) ?? agentContent;
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === agentMessageId
+                ? { ...m, content: finalContent, streaming: false }
+                : m
+            )
+          );
+          setIsLoading(false);
+          return;
+        } else if (type === 'agent_error' || type === 'user_message_error') {
+          const err = event.error as Record<string, unknown>;
+          setError((err?.message as string) ?? 'Agent error');
+          setMessages((prev) =>
+            prev.map((m) => (m.id === agentMessageId ? { ...m, streaming: false } : m))
+          );
+          setIsLoading(false);
+          return;
         }
       }
     }
 
-    // Stream ended without success event — mark done anyway
-    setMessages((prev) =>
-      prev.map((msg) => (msg.streaming ? { ...msg, streaming: false } : msg))
-    );
+    // Stream ended — mark any in-progress message as done
+    setMessages((prev) => prev.map((m) => (m.streaming ? { ...m, streaming: false } : m)));
     setIsLoading(false);
   };
 
@@ -153,12 +169,12 @@ export default function DustChat() {
 
     try {
       if (!conversationId) {
-        const newConversationId = await createConversation(userMessage);
-        setConversationId(newConversationId);
-        await streamEvents(newConversationId);
+        const { conversationId: newConvId, messageId } = await createConversation(userMessage);
+        setConversationId(newConvId);
+        await streamEvents(newConvId, messageId);
       } else {
-        await sendMessage(conversationId, userMessage);
-        await streamEvents(conversationId);
+        const messageId = await postMessage(conversationId, userMessage);
+        await streamEvents(conversationId, messageId);
       }
     } catch (err) {
       if ((err as Error).name !== 'AbortError') {
@@ -207,7 +223,7 @@ export default function DustChat() {
                     : 'bg-slate-100 text-slate-900'
                 }`}
               >
-                {message.content || (message.streaming ? '' : '')}
+                {message.content}
                 {message.streaming && (
                   <span className="inline-block w-[2px] h-[1em] bg-slate-500 ml-0.5 align-middle animate-pulse" />
                 )}
@@ -215,12 +231,13 @@ export default function DustChat() {
             </div>
           ))}
 
+          {/* Bouncing dots while waiting for agent_message_new */}
           {isLoading && (messages.length === 0 || messages[messages.length - 1]?.type === 'user') && (
             <div className="flex justify-start">
-              <div className="bg-slate-100 text-slate-500 px-4 py-3 rounded-lg text-sm flex gap-1 items-center">
-                <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce [animation-delay:0ms]" />
-                <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce [animation-delay:150ms]" />
-                <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce [animation-delay:300ms]" />
+              <div className="bg-slate-100 px-4 py-3 rounded-lg flex gap-1 items-center">
+                <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce [animation-delay:0ms]" />
+                <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce [animation-delay:150ms]" />
+                <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce [animation-delay:300ms]" />
               </div>
             </div>
           )}

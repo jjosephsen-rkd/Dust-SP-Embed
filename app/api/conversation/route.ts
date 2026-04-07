@@ -13,24 +13,27 @@ export async function POST(request: NextRequest) {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
+          title: null,
+          visibility: 'unlisted',
           message: {
             content: message,
             mentions: [{ configurationId: process.env.DUST_AGENT_ID }],
             context: {
               username: 'web_user',
-              timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+              timezone: 'UTC',
               fullName: 'Web User',
+              email: null,
+              profilePictureUrl: null,
               origin: 'api',
             },
           },
           blocking: false,
-          title: 'Embedded Chat',
         }),
       }
     );
 
     const text = await dustRes.text();
-    console.log('Dust conversation response:', dustRes.status, text);
+    console.log('Dust create conversation:', dustRes.status, text.slice(0, 500));
 
     if (!dustRes.ok) {
       return NextResponse.json(
@@ -40,7 +43,10 @@ export async function POST(request: NextRequest) {
     }
 
     const data = JSON.parse(text);
-    return NextResponse.json({ conversationId: data.conversation.sId });
+    return NextResponse.json({
+      conversationId: data.conversation.sId,
+      messageId: data.message.sId,
+    });
   } catch (err) {
     console.error('conversation route error:', err);
     return NextResponse.json(
