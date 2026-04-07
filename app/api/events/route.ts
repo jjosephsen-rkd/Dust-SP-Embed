@@ -21,7 +21,22 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  return new Response(dustRes.body, {
+  // Tee the stream so we can log the raw SSE for debugging
+  const [streamForClient, streamForLog] = dustRes.body.tee();
+
+  (async () => {
+    const reader = streamForLog.getReader();
+    const decoder = new TextDecoder();
+    let log = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      log += decoder.decode(value, { stream: true });
+    }
+    console.log('Dust raw SSE:\n', log.slice(0, 2000));
+  })();
+
+  return new Response(streamForClient, {
     headers: {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache, no-transform',

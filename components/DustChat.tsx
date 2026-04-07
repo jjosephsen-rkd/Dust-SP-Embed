@@ -69,6 +69,7 @@ export default function DustChat() {
     let buffer = '';
     let currentMessageId = '';
     let currentContent = '';
+    let pendingEventType = '';
 
     while (true) {
       const { done, value } = await reader.read();
@@ -80,13 +81,11 @@ export default function DustChat() {
 
       for (const line of lines) {
         if (line.startsWith('event:')) {
-          const eventType = line.slice(6).trim();
+          pendingEventType = line.slice(6).trim();
+        } else if (line.startsWith('data:') && pendingEventType) {
+          const rawData = line.slice(5).trim();
+          pendingEventType = '';
 
-          // peek at next data line from already-split lines
-          const dataLine = lines[lines.indexOf(line) + 1];
-          if (!dataLine?.startsWith('data:')) continue;
-
-          const rawData = dataLine.slice(5).trim();
           let data: Record<string, unknown>;
           try {
             data = JSON.parse(rawData);
@@ -94,14 +93,16 @@ export default function DustChat() {
             continue;
           }
 
-          if (eventType === 'agent_message_new') {
+          const eventType = (data.type as string) ?? pendingEventType;
+
+          if (eventType === 'agent_message_new' || data.messageId) {
             currentMessageId = (data.messageId ?? `agent-${Date.now()}`) as string;
             currentContent = '';
             setMessages((prev) => [
               ...prev,
               { id: currentMessageId, type: 'agent', content: '', streaming: true },
             ]);
-          } else if (eventType === 'generation_tokens') {
+          } else if (eventType === 'generation_tokens' || data.text !== undefined) {
             currentContent += (data.text as string) ?? '';
             const id = currentMessageId;
             const content = currentContent;
@@ -124,6 +125,8 @@ export default function DustChat() {
             setIsLoading(false);
             return;
           }
+        } else if (line === '') {
+          pendingEventType = '';
         }
       }
     }
