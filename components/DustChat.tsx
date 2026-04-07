@@ -6,6 +6,7 @@ interface Message {
   id: string;
   type: 'user' | 'agent';
   content: string;
+  streaming?: boolean;
 }
 
 export default function DustChat() {
@@ -15,22 +16,14 @@ export default function DustChat() {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const eventSourceRef = useRef<EventSource | null>(null);
-
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    scrollToBottom();
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
   useEffect(() => {
-    return () => {
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-      }
-    };
+    return () => abortRef.current?.abort();
   }, []);
 
   const createConversation = async (userMessage: string) => {
@@ -39,7 +32,6 @@ export default function DustChat() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: userMessage }),
     });
-
     const data = await response.json();
     if (!response.ok) {
       throw new Error(data?.error ?? `Request failed (${response.status})`);
@@ -48,62 +40,99 @@ export default function DustChat() {
   };
 
   const sendMessage = async (convId: string, userMessage: string) => {
-    await fetch('/api/message', {
+    const response = await fetch('/api/message', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ conversationId: convId, message: userMessage }),
     });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.error ?? `Request failed (${response.status})`);
+    }
   };
 
-  const streamEvents = (convId: string) => {
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
+  const streamEvents = async (convId: string) => {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    const response = await fetch(`/api/events?conversationId=${convId}`, {
+      signal: controller.signal,
+    });
+
+    if (!response.ok || !response.body) {
+      throw new Error(`Events stream failed (${response.status})`);
     }
 
-    const eventSource = new EventSource(`/api/events?conversationId=${convId}`);
-    eventSourceRef.current = eventSource;
-
-    let currentAgentMessage = '';
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
     let currentMessageId = '';
+    let currentContent = '';
 
-    eventSource.addEventListener('agent_message_new', (e: MessageEvent) => {
-      const data = JSON.parse(e.data);
-      currentMessageId = data.messageId;
-      currentAgentMessage = '';
-    });
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
 
-    eventSource.addEventListener('generation_tokens', (e: MessageEvent) => {
-      const data = JSON.parse(e.data);
-      currentAgentMessage += data.text;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
 
-      setMessages((prev) => {
-        const filtered = prev.filter((msg) => msg.id !== currentMessageId);
-        return [
-          ...filtered,
-          {
-            id: currentMessageId,
-            type: 'agent',
-            content: currentAgentMessage,
-          },
-        ];
-      });
-    });
+      for (const line of lines) {
+        if (line.startsWith('event:')) {
+          const eventType = line.slice(6).trim();
 
-    eventSource.addEventListener('agent_message_success', () => {
-      setIsLoading(false);
-      eventSource.close();
-    });
+          // peek at next data line from already-split lines
+          const dataLine = lines[lines.indexOf(line) + 1];
+          if (!dataLine?.startsWith('data:')) continue;
 
-    eventSource.addEventListener('agent_error', (e: MessageEvent) => {
-      const data = JSON.parse(e.data);
-      setError(`Agent error: ${data.error.message}`);
-      setIsLoading(false);
-      eventSource.close();
-    });
+          const rawData = dataLine.slice(5).trim();
+          let data: Record<string, unknown>;
+          try {
+            data = JSON.parse(rawData);
+          } catch {
+            continue;
+          }
 
-    eventSource.onerror = () => {
-      eventSource.close();
-    };
+          if (eventType === 'agent_message_new') {
+            currentMessageId = (data.messageId ?? `agent-${Date.now()}`) as string;
+            currentContent = '';
+            setMessages((prev) => [
+              ...prev,
+              { id: currentMessageId, type: 'agent', content: '', streaming: true },
+            ]);
+          } else if (eventType === 'generation_tokens') {
+            currentContent += (data.text as string) ?? '';
+            const id = currentMessageId;
+            const content = currentContent;
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === id ? { ...msg, content, streaming: true } : msg
+              )
+            );
+          } else if (eventType === 'agent_message_success') {
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === currentMessageId ? { ...msg, streaming: false } : msg
+              )
+            );
+            setIsLoading(false);
+            return;
+          } else if (eventType === 'agent_error') {
+            const errMsg = (data.error as { message?: string })?.message ?? 'Agent error';
+            setError(errMsg);
+            setIsLoading(false);
+            return;
+          }
+        }
+      }
+    }
+
+    // Stream ended without success event — mark done anyway
+    setMessages((prev) =>
+      prev.map((msg) => (msg.streaming ? { ...msg, streaming: false } : msg))
+    );
+    setIsLoading(false);
   };
 
   const handleSendMessage = async () => {
@@ -114,25 +143,25 @@ export default function DustChat() {
     setError(null);
     setIsLoading(true);
 
-    const newUserMessage: Message = {
-      id: `user-${Date.now()}`,
-      type: 'user',
-      content: userMessage,
-    };
-    setMessages((prev) => [...prev, newUserMessage]);
+    setMessages((prev) => [
+      ...prev,
+      { id: `user-${Date.now()}`, type: 'user', content: userMessage },
+    ]);
 
     try {
       if (!conversationId) {
         const newConversationId = await createConversation(userMessage);
         setConversationId(newConversationId);
-        streamEvents(newConversationId);
+        await streamEvents(newConversationId);
       } else {
         await sendMessage(conversationId, userMessage);
-        streamEvents(conversationId);
+        await streamEvents(conversationId);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
-      setIsLoading(false);
+      if ((err as Error).name !== 'AbortError') {
+        setError(err instanceof Error ? err.message : 'An error occurred');
+        setIsLoading(false);
+      }
     }
   };
 
@@ -175,15 +204,20 @@ export default function DustChat() {
                     : 'bg-slate-100 text-slate-900'
                 }`}
               >
-                {message.content}
+                {message.content || (message.streaming ? '' : '')}
+                {message.streaming && (
+                  <span className="inline-block w-[2px] h-[1em] bg-slate-500 ml-0.5 align-middle animate-pulse" />
+                )}
               </div>
             </div>
           ))}
 
-          {isLoading && messages[messages.length - 1]?.type === 'user' && (
+          {isLoading && (messages.length === 0 || messages[messages.length - 1]?.type === 'user') && (
             <div className="flex justify-start">
-              <div className="bg-slate-100 text-slate-500 px-4 py-3 rounded-lg text-sm">
-                Thinking...
+              <div className="bg-slate-100 text-slate-500 px-4 py-3 rounded-lg text-sm flex gap-1 items-center">
+                <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce [animation-delay:0ms]" />
+                <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce [animation-delay:150ms]" />
+                <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce [animation-delay:300ms]" />
               </div>
             </div>
           )}
