@@ -13,6 +13,7 @@ interface Message {
   id: string;
   type: 'user' | 'agent';
   content: string;
+  thinking?: string;      // chain-of-thought text while streaming
   streaming?: boolean;
 }
 
@@ -132,13 +133,25 @@ export default function DustChat() {
           // Create the bubble on first token if agent_message_new wasn't received
           if (eventMsgId) ensureBubble(eventMsgId);
 
-          // Only render actual response tokens (not chain-of-thought)
-          if (event.classification === 'tokens' && event.text) {
+          const id = agentMessageId;
+          if (event.classification === 'chain_of_thought' && event.text) {
+            // Stream thinking text into the thinking field
+            const thinkingDelta = event.text as string;
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === id
+                  ? { ...m, thinking: (m.thinking ?? '') + thinkingDelta, streaming: true }
+                  : m
+              )
+            );
+          } else if (event.classification === 'tokens' && event.text) {
+            // Real answer tokens — accumulate and clear thinking display
             agentContent += event.text as string;
-            const id = agentMessageId;
             const content = agentContent;
             setMessages((prev) =>
-              prev.map((m) => (m.id === id ? { ...m, content, streaming: true } : m))
+              prev.map((m) =>
+                m.id === id ? { ...m, content, thinking: undefined, streaming: true } : m
+              )
             );
           }
         } else if (type === 'agent_message_success') {
@@ -245,13 +258,27 @@ export default function DustChat() {
                 {message.type === 'user' ? (
                   message.content
                 ) : (
-                  <div className="prose prose-sm max-w-none prose-table:text-sm prose-td:py-1 prose-th:py-1">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                      {stripCitations(message.content)}
-                    </ReactMarkdown>
-                    {message.streaming && (
-                      <span className="inline-block w-[2px] h-[1em] bg-slate-500 ml-0.5 align-middle animate-pulse" />
+                  <div>
+                    {/* Thinking section — visible only while chain-of-thought is streaming */}
+                    {message.thinking !== undefined && (
+                      <div className="mb-3 rounded-md bg-slate-200/60 px-3 py-2 text-xs text-slate-500 italic border-l-2 border-slate-300">
+                        <span className="not-italic font-medium text-slate-400 block mb-1">Thinking…</span>
+                        {message.thinking}
+                        <span className="inline-block w-[2px] h-[0.9em] bg-slate-400 ml-0.5 align-middle animate-pulse" />
+                      </div>
                     )}
+
+                    {/* Final answer */}
+                    {message.content ? (
+                      <div className="prose prose-sm max-w-none prose-table:text-sm prose-td:py-1 prose-th:py-1">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {stripCitations(message.content)}
+                        </ReactMarkdown>
+                        {message.streaming && (
+                          <span className="inline-block w-[2px] h-[1em] bg-slate-500 ml-0.5 align-middle animate-pulse" />
+                        )}
+                      </div>
+                    ) : null}
                   </div>
                 )}
               </div>
