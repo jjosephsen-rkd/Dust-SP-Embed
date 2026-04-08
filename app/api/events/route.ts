@@ -1,54 +1,13 @@
 import { NextRequest } from 'next/server';
+import { getDustClient } from '@/lib/dustClient';
 
 export const dynamic = 'force-dynamic';
 
-const DUST_BASE = process.env.DUST_API_BASE_URL!;
-const WORKSPACE_ID = process.env.DUST_WORKSPACE_ID!;
-const API_KEY = process.env.DUST_API_KEY!;
-
-const dustHeaders = {
-  'Authorization': `Bearer ${API_KEY}`,
-};
-
-/**
- * Poll the conversation until we find an agent message that is a reply
- * to the given user message, then return its sId.
- */
-async function findAgentMessageId(
-  conversationId: string,
-  userMessageId: string
-): Promise<string | null> {
-  for (let attempt = 0; attempt < 20; attempt++) {
-    const res = await fetch(
-      `${DUST_BASE}/w/${WORKSPACE_ID}/assistant/conversations/${conversationId}`,
-      { headers: dustHeaders }
-    );
-    if (!res.ok) {
-      console.error('Failed to fetch conversation:', res.status);
-      return null;
-    }
-    const data = await res.json();
-    const content: unknown[][] = data.conversation?.content ?? [];
-
-    for (const messageVersions of content) {
-      for (const msg of messageVersions) {
-        const m = msg as Record<string, unknown>;
-        if (
-          m.type === 'agent_message' &&
-          m.parentMessageId === userMessageId
-        ) {
-          console.log('Found agent message:', m.sId);
-          return m.sId as string;
-        }
-      }
-    }
-
-    // Not found yet — wait and retry
-    await new Promise((r) => setTimeout(r, 500));
-  }
-
-  console.error('Timed out waiting for agent message');
-  return null;
+function errorStream(message: string) {
+  return new Response(
+    `data: ${JSON.stringify({ type: 'agent_error', error: { message } })}\n\n`,
+    { status: 200, headers: { 'Content-Type': 'text/event-stream' } }
+  );
 }
 
 export async function GET(request: NextRequest) {
@@ -56,36 +15,56 @@ export async function GET(request: NextRequest) {
   const userMessageId = request.nextUrl.searchParams.get('messageId');
 
   if (!conversationId || !userMessageId) {
-    return new Response(
-      `data: ${JSON.stringify({ type: 'agent_error', error: { message: 'Missing conversationId or messageId' } })}\n\n`,
-      { status: 200, headers: { 'Content-Type': 'text/event-stream' } }
-    );
+    return errorStream('Missing conversationId or messageId');
   }
 
-  const agentMessageId = await findAgentMessageId(conversationId, userMessageId);
+  const dust = getDustClient();
 
-  if (!agentMessageId) {
-    return new Response(
-      `data: ${JSON.stringify({ type: 'agent_error', error: { message: 'Could not find agent message for conversation' } })}\n\n`,
-      { status: 200, headers: { 'Content-Type': 'text/event-stream' } }
-    );
+  // Fetch the full conversation object required by streamAgentAnswerEvents
+  const convResult = await dust.getConversation({ conversationId });
+  if (convResult.isErr()) {
+    console.error('getConversation error:', convResult.error);
+    return errorStream(convResult.error.message);
   }
 
-  const url = `${DUST_BASE}/w/${WORKSPACE_ID}/assistant/conversations/${conversationId}/messages/${agentMessageId}/events`;
-  console.log('Streaming events from:', url);
+  const streamResult = await dust.streamAgentAnswerEvents({
+    conversation: convResult.value,
+    userMessageId,
+  });
 
-  const dustRes = await fetch(url, { headers: dustHeaders });
-
-  if (!dustRes.ok || !dustRes.body) {
-    const text = await dustRes.text();
-    console.error('Dust events error:', dustRes.status, text);
-    return new Response(
-      `data: ${JSON.stringify({ type: 'agent_error', error: { message: `Dust events error ${dustRes.status}: ${text}` } })}\n\n`,
-      { status: 200, headers: { 'Content-Type': 'text/event-stream' } }
-    );
+  if (streamResult.isErr()) {
+    console.error('streamAgentAnswerEvents error:', streamResult.error);
+    return errorStream(streamResult.error.message);
   }
 
-  return new Response(dustRes.body, {
+  const { eventStream } = streamResult.value;
+
+  // Convert the SDK's AsyncIterable into an SSE ReadableStream for the client
+  const readable = new ReadableStream({
+    async start(controller) {
+      const encoder = new TextEncoder();
+      try {
+        for await (const event of eventStream) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+          if (
+            event.type === 'agent_message_success' ||
+            event.type === 'agent_error' ||
+            event.type === 'user_message_error'
+          ) {
+            break;
+          }
+        }
+      } catch (err) {
+        console.error('event stream error:', err);
+        const errEvent = { type: 'agent_error', error: { message: String(err) } };
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(errEvent)}\n\n`));
+      } finally {
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(readable, {
     headers: {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache, no-transform',

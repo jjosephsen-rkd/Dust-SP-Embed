@@ -1,51 +1,38 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getDustClient } from '@/lib/dustClient';
 
 export async function POST(request: NextRequest) {
   try {
     const { message } = await request.json();
+    const dust = getDustClient();
 
-    const dustRes = await fetch(
-      `${process.env.DUST_API_BASE_URL}/w/${process.env.DUST_WORKSPACE_ID}/assistant/conversations`,
-      {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${process.env.DUST_API_KEY}`,
-          'Content-Type': 'application/json',
+    const result = await dust.createConversation({
+      title: null,
+      visibility: 'unlisted',
+      message: {
+        content: message,
+        mentions: [{ configurationId: process.env.DUST_AGENT_ID! }],
+        context: {
+          username: 'web_user',
+          timezone: 'UTC',
+          fullName: 'Web User',
+          email: null,
+          profilePictureUrl: null,
+          origin: 'api',
         },
-        body: JSON.stringify({
-          title: null,
-          visibility: 'unlisted',
-          message: {
-            content: message,
-            mentions: [{ configurationId: process.env.DUST_AGENT_ID }],
-            context: {
-              username: 'web_user',
-              timezone: 'UTC',
-              fullName: 'Web User',
-              email: null,
-              profilePictureUrl: null,
-              origin: 'api',
-            },
-          },
-          blocking: false,
-        }),
-      }
-    );
+      },
+      blocking: false,
+    });
 
-    const text = await dustRes.text();
-    console.log('Dust create conversation:', dustRes.status, text.slice(0, 500));
-
-    if (!dustRes.ok) {
-      return NextResponse.json(
-        { error: `Dust API error ${dustRes.status}: ${text}` },
-        { status: dustRes.status }
-      );
+    if (result.isErr()) {
+      console.error('createConversation error:', result.error);
+      return NextResponse.json({ error: result.error.message }, { status: 500 });
     }
 
-    const data = JSON.parse(text);
+    const { conversation, message: userMessage } = result.value;
     return NextResponse.json({
-      conversationId: data.conversation.sId,
-      messageId: data.message.sId,
+      conversationId: conversation.sId,
+      messageId: userMessage?.sId,
     });
   } catch (err) {
     console.error('conversation route error:', err);
