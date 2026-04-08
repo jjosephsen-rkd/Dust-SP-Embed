@@ -80,13 +80,23 @@ export default function DustChat() {
     let agentMessageId = '';
     let agentContent = '';
 
+    // Ensure the agent bubble exists for a given messageId
+    const ensureBubble = (msgId: string) => {
+      if (agentMessageId !== msgId) {
+        agentMessageId = msgId;
+        agentContent = '';
+        setMessages((prev) => {
+          if (prev.some((m) => m.id === msgId)) return prev;
+          return [...prev, { id: msgId, type: 'agent' as const, content: '', streaming: true }];
+        });
+      }
+    };
+
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
-
-      // Process complete lines
       const lines = buffer.split('\n');
       buffer = lines.pop() ?? '';
 
@@ -104,18 +114,18 @@ export default function DustChat() {
         }
 
         const type = event.type as string;
+        // Most events carry messageId at top level
+        const eventMsgId = event.messageId as string | undefined;
 
         if (type === 'agent_message_new') {
-          // Agent is starting a response — create a placeholder message
-          const msg = event.message as Record<string, unknown>;
-          agentMessageId = (msg?.sId ?? `agent-${Date.now()}`) as string;
-          agentContent = '';
-          setMessages((prev) => [
-            ...prev,
-            { id: agentMessageId, type: 'agent', content: '', streaming: true },
-          ]);
+          const msg = event.message as Record<string, unknown> | undefined;
+          const id = (msg?.sId ?? eventMsgId ?? `agent-${Date.now()}`) as string;
+          ensureBubble(id);
         } else if (type === 'generation_tokens') {
-          // Only show actual response tokens, not chain-of-thought
+          // Create the bubble on first token if agent_message_new wasn't received
+          if (eventMsgId) ensureBubble(eventMsgId);
+
+          // Only render actual response tokens (not chain-of-thought)
           if (event.classification === 'tokens' && event.text) {
             agentContent += event.text as string;
             const id = agentMessageId;
@@ -125,23 +135,25 @@ export default function DustChat() {
             );
           }
         } else if (type === 'agent_message_success') {
-          // Use the final content from the success event as source of truth
-          const msg = event.message as Record<string, unknown>;
-          const finalContent = (msg?.content as string) ?? agentContent;
+          const msg = event.message as Record<string, unknown> | undefined;
+          // Use final content from success event; fall back to accumulated tokens
+          const finalContent = (msg?.content as string | null) ?? agentContent;
+          const successId = (msg?.sId as string | undefined) ?? agentMessageId;
+
+          if (successId) ensureBubble(successId);
+
           setMessages((prev) =>
             prev.map((m) =>
-              m.id === agentMessageId
-                ? { ...m, content: finalContent, streaming: false }
-                : m
+              m.id === successId ? { ...m, content: finalContent ?? '', streaming: false } : m
             )
           );
           setIsLoading(false);
           return;
         } else if (type === 'agent_error' || type === 'user_message_error') {
-          const err = event.error as Record<string, unknown>;
+          const err = event.error as Record<string, unknown> | undefined;
           setError((err?.message as string) ?? 'Agent error');
           setMessages((prev) =>
-            prev.map((m) => (m.id === agentMessageId ? { ...m, streaming: false } : m))
+            prev.map((m) => (m.streaming ? { ...m, streaming: false } : m))
           );
           setIsLoading(false);
           return;
@@ -149,7 +161,7 @@ export default function DustChat() {
       }
     }
 
-    // Stream ended — mark any in-progress message as done
+    // Stream ended without a success event — mark done and show what we have
     setMessages((prev) => prev.map((m) => (m.streaming ? { ...m, streaming: false } : m)));
     setIsLoading(false);
   };
