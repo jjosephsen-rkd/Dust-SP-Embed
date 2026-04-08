@@ -1,6 +1,13 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+
+// Strip Dust citation tags like :cite[abc] or :cite[abc,:cite[def]]
+function stripCitations(text: string): string {
+  return text.replace(/:cite\[[^\]]*\]/g, '');
+}
 
 interface Message {
   id: string;
@@ -229,15 +236,23 @@ export default function DustChat() {
               className={`flex ${message.type === 'user' ? 'justify-end' : 'justify-start'}`}
             >
               <div
-                className={`max-w-[70%] px-4 py-3 rounded-lg text-sm whitespace-pre-wrap ${
+                className={`px-4 py-3 rounded-lg text-sm ${
                   message.type === 'user'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-slate-100 text-slate-900'
+                    ? 'max-w-[70%] bg-blue-600 text-white'
+                    : 'max-w-[85%] bg-slate-100 text-slate-900'
                 }`}
               >
-                {message.content}
-                {message.streaming && (
-                  <span className="inline-block w-[2px] h-[1em] bg-slate-500 ml-0.5 align-middle animate-pulse" />
+                {message.type === 'user' ? (
+                  message.content
+                ) : (
+                  <div className="prose prose-sm max-w-none prose-table:text-sm prose-td:py-1 prose-th:py-1">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {stripCitations(message.content)}
+                    </ReactMarkdown>
+                    {message.streaming && (
+                      <span className="inline-block w-[2px] h-[1em] bg-slate-500 ml-0.5 align-middle animate-pulse" />
+                    )}
+                  </div>
                 )}
               </div>
             </div>
