@@ -22,9 +22,11 @@ interface DustChatProps {
   title?: string;
   subtitle?: string;
   compact?: boolean;
+  headerImage?: string;
+  headerImageAlt?: string;
 }
 
-export default function DustChat({ agentId, title = 'Dust Agent Chat', subtitle = 'AI-powered assistance', compact = false }: DustChatProps) {
+export default function DustChat({ agentId, title = 'Dust Agent Chat', subtitle = 'AI-powered assistance', compact = false, headerImage, headerImageAlt = '' }: DustChatProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -238,9 +240,18 @@ export default function DustChat({ agentId, title = 'Dust Agent Chat', subtitle 
     <div className={compact ? 'w-full h-screen flex flex-col' : 'w-full h-screen flex items-center justify-center p-4'}>
       <div className={compact ? 'bg-white w-full h-full flex flex-col' : 'bg-white rounded-xl shadow-lg w-full max-w-4xl h-[90vh] max-h-[800px] flex flex-col'}>
         {/* Header */}
-        <div className={`border-b border-slate-200 ${compact ? 'px-4 py-3' : 'p-6'}`}>
-          <h1 className={`font-semibold text-slate-900 ${compact ? 'text-lg' : 'text-2xl'}`}>{title}</h1>
-          <p className="text-sm text-slate-500 mt-0.5">{subtitle}</p>
+        <div className={`border-b border-slate-200 flex items-center gap-3 ${compact ? 'px-4 py-3' : 'p-6'}`}>
+          {headerImage && (
+            <img
+              src={headerImage}
+              alt={headerImageAlt}
+              className={compact ? 'h-12 w-12 object-contain flex-shrink-0' : 'h-16 w-16 object-contain flex-shrink-0'}
+            />
+          )}
+          <div>
+            <h1 className={`font-semibold text-slate-900 ${compact ? 'text-lg' : 'text-2xl'}`}>{title}</h1>
+            <p className="text-sm text-slate-500 mt-0.5">{subtitle}</p>
+          </div>
         </div>
 
         {/* Messages */}
