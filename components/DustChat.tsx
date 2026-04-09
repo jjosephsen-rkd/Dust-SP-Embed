@@ -224,7 +224,7 @@ export default function DustChat() {
   };
 
   return (
-    <div className="w-full h-screen bg-slate-50 flex items-center justify-center p-4">
+    <div className="w-full h-screen flex items-center justify-center p-4">
       <div className="bg-white rounded-xl shadow-lg w-full max-w-4xl h-[90vh] max-h-[800px] flex flex-col">
         {/* Header */}
         <div className="p-6 border-b border-slate-200">
