@@ -3,14 +3,14 @@ import { getDustClient } from '@/lib/dustClient';
 
 export async function POST(request: NextRequest) {
   try {
-    const { conversationId, message } = await request.json();
+    const { conversationId, message, agentId } = await request.json();
     const dust = getDustClient();
 
     const result = await dust.postUserMessage({
       conversationId,
       message: {
         content: message,
-        mentions: [{ configurationId: process.env.DUST_AGENT_ID! }],
+        mentions: [{ configurationId: agentId ?? process.env.DUST_AGENT_ID! }],
         context: {
           username: 'web_user',
           timezone: 'UTC',

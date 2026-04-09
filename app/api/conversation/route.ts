@@ -3,7 +3,7 @@ import { getDustClient } from '@/lib/dustClient';
 
 export async function POST(request: NextRequest) {
   try {
-    const { message } = await request.json();
+    const { message, agentId } = await request.json();
     const dust = getDustClient();
 
     const result = await dust.createConversation({
@@ -11,7 +11,7 @@ export async function POST(request: NextRequest) {
       visibility: 'unlisted',
       message: {
         content: message,
-        mentions: [{ configurationId: process.env.DUST_AGENT_ID! }],
+        mentions: [{ configurationId: agentId ?? process.env.DUST_AGENT_ID! }],
         context: {
           username: 'web_user',
           timezone: 'UTC',

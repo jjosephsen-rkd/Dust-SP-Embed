@@ -17,7 +17,14 @@ interface Message {
   streaming?: boolean;
 }
 
-export default function DustChat() {
+interface DustChatProps {
+  agentId?: string;
+  title?: string;
+  subtitle?: string;
+  compact?: boolean;
+}
+
+export default function DustChat({ agentId, title = 'Dust Agent Chat', subtitle = 'AI-powered assistance', compact = false }: DustChatProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -46,7 +53,7 @@ export default function DustChat() {
     const res = await fetch('/api/conversation', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: userMessage }),
+      body: JSON.stringify({ message: userMessage, agentId }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data?.error ?? `Request failed (${res.status})`);
@@ -61,7 +68,7 @@ export default function DustChat() {
     const res = await fetch('/api/message', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ conversationId: convId, message: userMessage }),
+      body: JSON.stringify({ conversationId: convId, message: userMessage, agentId }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data?.error ?? `Request failed (${res.status})`);
@@ -228,12 +235,12 @@ export default function DustChat() {
   };
 
   return (
-    <div className="w-full h-screen flex items-center justify-center p-4">
-      <div className="bg-white rounded-xl shadow-lg w-full max-w-4xl h-[90vh] max-h-[800px] flex flex-col">
+    <div className={compact ? 'w-full h-screen flex flex-col' : 'w-full h-screen flex items-center justify-center p-4'}>
+      <div className={compact ? 'bg-white w-full h-full flex flex-col' : 'bg-white rounded-xl shadow-lg w-full max-w-4xl h-[90vh] max-h-[800px] flex flex-col'}>
         {/* Header */}
-        <div className="p-6 border-b border-slate-200">
-          <h1 className="text-2xl font-semibold text-slate-900">Dust Agent Chat</h1>
-          <p className="text-sm text-slate-500 mt-1">AI-powered assistance</p>
+        <div className={`border-b border-slate-200 ${compact ? 'px-4 py-3' : 'p-6'}`}>
+          <h1 className={`font-semibold text-slate-900 ${compact ? 'text-lg' : 'text-2xl'}`}>{title}</h1>
+          <p className="text-sm text-slate-500 mt-0.5">{subtitle}</p>
         </div>
 
         {/* Messages */}
