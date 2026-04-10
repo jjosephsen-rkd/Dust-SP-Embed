@@ -9,8 +9,7 @@
  */
 import type { NextApiRequest, NextApiResponse } from 'next';
 import {
-  CloudAdapter,
-  ConfigurationBotFrameworkAuthentication,
+  BotFrameworkAdapter,
   TurnContext,
   ActivityTypes,
 } from 'botbuilder';
@@ -21,18 +20,17 @@ export const config = {
   api: { bodyParser: false },
 };
 
+// Extend Vercel function timeout (Pro plan: up to 300s, free plan: capped at 10s)
+export const maxDuration = 60;
+
 // ---------------------------------------------------------------------------
 // Adapter — initialised once per worker process
 // ---------------------------------------------------------------------------
 
-const auth = new ConfigurationBotFrameworkAuthentication({
-  MicrosoftAppId: process.env.MICROSOFT_APP_ID ?? '',
-  MicrosoftAppPassword: process.env.MICROSOFT_APP_PASSWORD ?? '',
-  // Change to 'SingleTenant' and add MicrosoftAppTenantId for tenant-locked bots
-  MicrosoftAppType: 'MultiTenant',
+const adapter = new BotFrameworkAdapter({
+  appId: process.env.MICROSOFT_APP_ID ?? '',
+  appPassword: process.env.MICROSOFT_APP_PASSWORD ?? '',
 });
-
-const adapter = new CloudAdapter(auth);
 
 adapter.onTurnError = async (context: TurnContext, error: Error) => {
   console.error('[Teams Bot] Unhandled turn error:', error);
