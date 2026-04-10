@@ -1,0 +1,36 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.17/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.17",
+  "version": "1.0.0",
+  "id": "REPLACE_WITH_MICROSOFT_APP_ID",
+  "packageName": "com.rkd.comscoach",
+  "developer": {
+    "name": "RKD",
+    "websiteUrl": "REPLACE_WITH_YOUR_BOT_URL",
+    "privacyUrl": "REPLACE_WITH_YOUR_BOT_URL/privacy",
+    "termsOfUseUrl": "REPLACE_WITH_YOUR_BOT_URL/terms"
+  },
+  "icons": {
+    "color": "color.png",
+    "outline": "outline.png"
+  },
+  "name": {
+    "short": "COMS Coach",
+    "full": "COMS Coach - AI Assistant"
+  },
+  "description": {
+    "short": "AI-powered COMS coaching assistant",
+    "full": "COMS Coach helps you navigate the COMS system with AI-powered guidance and answers."
+  },
+  "accentColor": "#0078D4",
+  "bots": [
+    {
+      "botId": "REPLACE_WITH_MICROSOFT_APP_ID",
+      "scopes": ["personal", "team", "groupChat"],
+      "supportsFiles": false,
+      "isNotificationOnly": false
+    }
+  ],
+  "permissions": ["identity", "messageTeamMembers"],
+  "validDomains": []
+}
