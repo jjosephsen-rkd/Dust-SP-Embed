@@ -1,19 +1,9 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  webpack: (config, { isServer }) => {
-    if (isServer) {
-      // Prevent webpack from bundling botbuilder and its Node.js-native dependencies
-      const existing = config.externals || [];
-      config.externals = [
-        ...existing,
-        'botbuilder',
-        'botframework-connector',
-        'botframework-schema',
-      ];
-    }
-    return config;
-  },
+  // Keep botbuilder and its deps as native Node.js modules (not bundled).
+  // This works with both Turbopack (Next.js 16 default) and webpack.
+  serverExternalPackages: ['botbuilder', 'botframework-connector', 'botframework-schema'],
 };
 
 module.exports = nextConfig;
