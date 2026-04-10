@@ -36,8 +36,11 @@ async function getBotToken(): Promise<string> {
       }).toString(),
     }
   );
-  const data = await res.json() as { access_token?: string };
-  if (!data.access_token) throw new Error('Failed to obtain bot access token');
+  const data = await res.json() as { access_token?: string; error?: string; error_description?: string };
+  if (!data.access_token) {
+    console.error('[Teams Bot] Token error:', data.error, data.error_description);
+    throw new Error(`Failed to obtain bot access token: ${data.error} — ${data.error_description}`);
+  }
   return data.access_token;
 }
 
