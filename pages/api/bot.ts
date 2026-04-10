@@ -23,8 +23,10 @@ export const maxDuration = 60;
 // ---------------------------------------------------------------------------
 
 async function getBotToken(): Promise<string> {
+  const tenant = process.env.MICROSOFT_APP_TENANT_ID ?? 'common';
+  console.log('[Teams Bot] Using tenant:', tenant);
   const res = await fetch(
-    'https://login.microsoftonline.com/botframework.com/oauth2/v2.0/token',
+    `https://login.microsoftonline.com/${tenant}/oauth2/v2.0/token`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
