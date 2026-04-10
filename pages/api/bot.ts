@@ -1,8 +1,15 @@
 /**
  * Teams Bot endpoint — implements the Bot Framework protocol directly
- * without the botbuilder SDK. Processes the Dust response synchronously
- * and returns the reply inline in the HTTP 200 response body, which is
- * required on Vercel (functions terminate as soon as res.end() is called).
+ * without the botbuilder SDK.
+ *
+ * Flow:
+ *  1. Receive Activity POST from Bot Framework
+ *  2. Await Dust response (synchronously, before responding)
+ *  3. POST the reply to the Bot Connector REST API
+ *  4. Return 200 to Bot Framework
+ *
+ * This order is required on Vercel: the function must complete all work
+ * before returning a response — anything after res.end() is killed.
  */
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { getDustClient } from '@/lib/dustClient';
@@ -12,7 +19,55 @@ export const config = { api: { bodyParser: true } };
 export const maxDuration = 60;
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Bot Connector helpers
+// ---------------------------------------------------------------------------
+
+async function getBotToken(): Promise<string> {
+  const res = await fetch(
+    'https://login.microsoftonline.com/botframework.com/oauth2/v2.0/token',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'client_credentials',
+        client_id: process.env.MICROSOFT_APP_ID!,
+        client_secret: process.env.MICROSOFT_APP_PASSWORD!,
+        scope: 'https://api.botframework.com/.default',
+      }).toString(),
+    }
+  );
+  const data = await res.json() as { access_token?: string };
+  if (!data.access_token) throw new Error('Failed to obtain bot access token');
+  return data.access_token;
+}
+
+async function sendReply(
+  serviceUrl: string,
+  conversationId: string,
+  activityId: string,
+  text: string,
+  token: string
+): Promise<void> {
+  const base = serviceUrl.endsWith('/') ? serviceUrl : `${serviceUrl}/`;
+  const url = `${base}v3/conversations/${encodeURIComponent(conversationId)}/activities/${encodeURIComponent(activityId)}`;
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ type: 'message', text }),
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Bot Connector reply failed (${res.status}): ${body}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Dust helpers
 // ---------------------------------------------------------------------------
 
 function stripMentions(text: string): string {
@@ -60,14 +115,16 @@ async function getFullDustResponse(conversationId: string, userMessageId: string
 }
 
 // ---------------------------------------------------------------------------
-// Core processing — runs after we've already returned 200 to Bot Framework
+// Core processing
 // ---------------------------------------------------------------------------
 
-async function processActivity(activity: Record<string, unknown>): Promise<string> {
+async function processActivity(activity: Record<string, unknown>): Promise<void> {
+  const serviceUrl = activity.serviceUrl as string;
   const teamsConvId = (activity.conversation as Record<string, string>)?.id;
+  const activityId = activity.id as string;
   const userText = stripMentions((activity.text as string) ?? '');
 
-  if (!userText || !teamsConvId) return '';
+  if (!userText || !serviceUrl || !teamsConvId) return;
 
   const agentId = process.env.DUST_COMS_COACH_AGENT_ID ?? process.env.DUST_AGENT_ID!;
   const dust = getDustClient();
@@ -76,7 +133,7 @@ async function processActivity(activity: Record<string, unknown>): Promise<strin
   const userCtx = {
     username: (fromName?.replace(/\s+/g, '_').toLowerCase() || 'teams_user'),
     timezone: 'UTC',
-    fullName: fromName ?? 'Teams User',
+    fullName: fromName || 'Teams User',
     email: null as null,
     profilePictureUrl: null as null,
     origin: 'api' as const,
@@ -114,7 +171,8 @@ async function processActivity(activity: Record<string, unknown>): Promise<strin
   }
 
   const response = await getFullDustResponse(dustConvId, userMessageId);
-  return stripCitations(response);
+  const token = await getBotToken();
+  await sendReply(serviceUrl, teamsConvId, activityId, stripCitations(response), token);
 }
 
 // ---------------------------------------------------------------------------
@@ -122,7 +180,6 @@ async function processActivity(activity: Record<string, unknown>): Promise<strin
 // ---------------------------------------------------------------------------
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse): Promise<void> {
-  // Handle CORS preflight (Bot Framework Test in Web Chat sends OPTIONS)
   if (req.method === 'OPTIONS') {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -138,21 +195,32 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   const activity = req.body as Record<string, unknown>;
 
-  // Ack non-message activities silently
   if (activity.type !== 'message') {
     res.status(200).end();
     return;
   }
 
-  // Process Dust synchronously and return the reply inline in the HTTP response.
-  // This is required on Vercel — functions terminate as soon as res.end() is called,
-  // so async work after returning 200 never completes.
-  // Bot Framework supports receiving the reply activity directly in the 200 response body.
+  const serviceUrl = activity.serviceUrl as string;
+  const teamsConvId = (activity.conversation as Record<string, string>)?.id;
+  const activityId = activity.id as string;
+
   try {
-    const responseText = await processActivity(activity);
-    res.status(200).json({ type: 'message', text: responseText });
+    await processActivity(activity);
+    res.status(200).end();
   } catch (err) {
     console.error('[Teams Bot] Error processing activity:', err);
-    res.status(200).json({ type: 'message', text: 'Sorry, something went wrong. Please try again.' });
+    try {
+      const token = await getBotToken();
+      await sendReply(
+        serviceUrl,
+        teamsConvId,
+        activityId,
+        'Sorry, something went wrong. Please try again.',
+        token
+      );
+    } catch (sendErr) {
+      console.error('[Teams Bot] Failed to send error reply:', sendErr);
+    }
+    res.status(200).end();
   }
 }
