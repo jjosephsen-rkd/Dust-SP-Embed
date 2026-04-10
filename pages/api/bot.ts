@@ -74,7 +74,7 @@ async function processActivity(activity: Record<string, unknown>): Promise<strin
   const fromName = (activity.from as Record<string, string> | undefined)?.name;
 
   const userCtx = {
-    username: fromName?.replace(/\s+/g, '_').toLowerCase() ?? 'teams_user',
+    username: (fromName?.replace(/\s+/g, '_').toLowerCase() || 'teams_user'),
     timezone: 'UTC',
     fullName: fromName ?? 'Teams User',
     email: null as null,
