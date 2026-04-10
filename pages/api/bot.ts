@@ -51,7 +51,10 @@ async function sendReply(
   conversationId: string,
   activityId: string,
   text: string,
-  token: string
+  token: string,
+  botId: string,
+  userId: string,
+  userName: string
 ): Promise<void> {
   const base = serviceUrl.endsWith('/') ? serviceUrl : `${serviceUrl}/`;
   const url = `${base}v3/conversations/${encodeURIComponent(conversationId)}/activities/${encodeURIComponent(activityId)}`;
@@ -62,7 +65,12 @@ async function sendReply(
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify({ type: 'message', text }),
+    body: JSON.stringify({
+      type: 'message',
+      text,
+      from: { id: botId, name: 'COMS Coach' },
+      recipient: { id: userId, name: userName },
+    }),
   });
 
   if (!res.ok) {
@@ -128,12 +136,17 @@ async function processActivity(activity: Record<string, unknown>): Promise<void>
   const teamsConvId = (activity.conversation as Record<string, string>)?.id;
   const activityId = activity.id as string;
   const userText = stripMentions((activity.text as string) ?? '');
+  const from = activity.from as Record<string, string> | undefined;
+  const recipient = activity.recipient as Record<string, string> | undefined;
+  const userId = from?.id ?? 'unknown';
+  const userName = from?.name ?? 'Teams User';
+  const botId = recipient?.id ?? process.env.MICROSOFT_APP_ID!;
 
   if (!userText || !serviceUrl || !teamsConvId) return;
 
   const agentId = process.env.DUST_COMS_COACH_AGENT_ID ?? process.env.DUST_AGENT_ID!;
   const dust = getDustClient();
-  const fromName = (activity.from as Record<string, string> | undefined)?.name;
+  const fromName = userName;
 
   const userCtx = {
     username: (fromName?.replace(/\s+/g, '_').toLowerCase() || 'teams_user'),
@@ -177,7 +190,7 @@ async function processActivity(activity: Record<string, unknown>): Promise<void>
 
   const response = await getFullDustResponse(dustConvId, userMessageId);
   const token = await getBotToken();
-  await sendReply(serviceUrl, teamsConvId, activityId, stripCitations(response), token);
+  await sendReply(serviceUrl, teamsConvId, activityId, stripCitations(response), token, botId, userId, userName);
 }
 
 // ---------------------------------------------------------------------------
@@ -208,6 +221,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const serviceUrl = activity.serviceUrl as string;
   const teamsConvId = (activity.conversation as Record<string, string>)?.id;
   const activityId = activity.id as string;
+  const from = activity.from as Record<string, string> | undefined;
+  const recipient = activity.recipient as Record<string, string> | undefined;
+  const userId = from?.id ?? 'unknown';
+  const userName = from?.name ?? 'Teams User';
+  const botId = recipient?.id ?? process.env.MICROSOFT_APP_ID!;
 
   try {
     await processActivity(activity);
@@ -221,7 +239,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         teamsConvId,
         activityId,
         'Sorry, something went wrong. Please try again.',
-        token
+        token,
+        botId,
+        userId,
+        userName
       );
     } catch (sendErr) {
       console.error('[Teams Bot] Failed to send error reply:', sendErr);
