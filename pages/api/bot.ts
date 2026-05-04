@@ -46,6 +46,27 @@ async function getBotToken(): Promise<string> {
   return data.access_token;
 }
 
+async function sendTyping(
+  serviceUrl: string,
+  conversationId: string,
+  token: string,
+  botId: string,
+  userId: string,
+  userName: string
+): Promise<void> {
+  const base = serviceUrl.endsWith('/') ? serviceUrl : `${serviceUrl}/`;
+  const url = `${base}v3/conversations/${encodeURIComponent(conversationId)}/activities`;
+  await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      type: 'typing',
+      from: { id: botId, name: 'COMS Coach 2.0' },
+      recipient: { id: userId, name: userName },
+    }),
+  });
+}
+
 async function sendReply(
   serviceUrl: string,
   conversationId: string,
@@ -144,53 +165,66 @@ async function processActivity(activity: Record<string, unknown>): Promise<void>
 
   if (!userText || !serviceUrl || !teamsConvId) return;
 
-  const agentId = process.env.DUST_COMS_COACH_AGENT_ID ?? process.env.DUST_AGENT_ID!;
-  const dust = getDustClient();
-  const fromName = userName;
+  // Get token early so we can send typing indicators immediately
+  const token = await getBotToken();
 
-  const userCtx = {
-    username: (fromName?.replace(/\s+/g, '_').toLowerCase() || 'teams_user'),
-    timezone: 'UTC',
-    fullName: fromName || 'Teams User',
-    email: null as null,
-    profilePictureUrl: null as null,
-    origin: 'api' as const,
-  };
+  // Send typing indicator right away, then keep refreshing every 3s while Dust processes
+  void sendTyping(serviceUrl, teamsConvId, token, botId, userId, userName);
+  const typingInterval = setInterval(() => {
+    void sendTyping(serviceUrl, teamsConvId, token, botId, userId, userName);
+  }, 3000);
 
-  let dustConvId = getTeamsConversationId(teamsConvId);
-  let userMessageId: string;
+  try {
+    const agentId = process.env.DUST_COMS_COACH_AGENT_ID ?? process.env.DUST_AGENT_ID!;
+    const dust = getDustClient();
 
-  if (!dustConvId) {
-    const result = await dust.createConversation({
-      title: null,
-      visibility: 'unlisted',
-      message: {
-        content: userText,
-        mentions: [{ configurationId: agentId }],
-        context: userCtx,
-      },
-      blocking: false,
-    });
-    if (result.isErr()) throw new Error(result.error.message);
-    dustConvId = result.value.conversation.sId;
-    userMessageId = result.value.message!.sId;
-    setTeamsConversationId(teamsConvId, dustConvId);
-  } else {
-    const result = await dust.postUserMessage({
-      conversationId: dustConvId,
-      message: {
-        content: userText,
-        mentions: [{ configurationId: agentId }],
-        context: userCtx,
-      },
+    const userCtx = {
+      username: (userName?.replace(/\s+/g, '_').toLowerCase() || 'teams_user'),
+      timezone: 'UTC',
+      fullName: userName || 'Teams User',
+      email: null as null,
+      profilePictureUrl: null as null,
+      origin: 'api' as const,
+    };
+
+    let dustConvId = getTeamsConversationId(teamsConvId);
+    let userMessageId: string;
+
+    if (!dustConvId) {
+      const result = await dust.createConversation({
+        title: null,
+        visibility: 'unlisted',
+        message: {
+          content: userText,
+          mentions: [{ configurationId: agentId }],
+          context: userCtx,
+        },
+        blocking: false,
+      });
+      if (result.isErr()) throw new Error(result.error.message);
+      dustConvId = result.value.conversation.sId;
+      userMessageId = result.value.message!.sId;
+      setTeamsConversationId(teamsConvId, dustConvId);
+    } else {
+      const result = await dust.postUserMessage({
+        conversationId: dustConvId,
+        message: {
+          content: userText,
+          mentions: [{ configurationId: agentId }],
+          context: userCtx,
+        },
     });
     if (result.isErr()) throw new Error(result.error.message);
     userMessageId = result.value.sId;
   }
 
-  const response = await getFullDustResponse(dustConvId, userMessageId);
-  const token = await getBotToken();
-  await sendReply(serviceUrl, teamsConvId, activityId, stripCitations(response), token, botId, userId, userName);
+    const response = await getFullDustResponse(dustConvId, userMessageId);
+    clearInterval(typingInterval);
+    await sendReply(serviceUrl, teamsConvId, activityId, stripCitations(response), token, botId, userId, userName);
+  } catch (err) {
+    clearInterval(typingInterval);
+    throw err;
+  }
 }
 
 // ---------------------------------------------------------------------------
